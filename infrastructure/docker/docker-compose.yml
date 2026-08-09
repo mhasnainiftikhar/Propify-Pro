@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: propify-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: propify
+      POSTGRES_PASSWORD: propify_password
+      POSTGRES_DB: propify
+    ports:
+      - "5432:5432"
+    volumes:
+      - propify_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8
+    container_name: propify-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - propify_redis_data:/data
+
+volumes:
+  propify_postgres_data:
+  propify_redis_data:
