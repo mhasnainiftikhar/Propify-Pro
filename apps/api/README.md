@@ -1,98 +1,124 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Propify Pro — API (Auth Service)
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Standalone authentication and user-management microservice for **Propify Pro**.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+This service is **self-contained**: it owns its own PostgreSQL database (via
+`AUTH_DATABASE_URL`) and its own Prisma schema. It does **not** assume access
+to any other service's database.
 
-## Description
+## Tech stack
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- NestJS (TypeScript)
+- Prisma Client (PostgreSQL)
+- Passport.js (`passport-jwt`) for bearer-token auth
+- `argon2` for password hashing
+- `class-validator` + `class-transformer` for DTO validation
+- `@nestjs/swagger` for API docs (served at `/docs`)
+- `@nestjs/throttler` for rate limiting
 
-## Project setup
+## Cross-service contract
 
-```bash
-$ npm install
+### Authentication model
+
+- **Access token** — short-lived JWT (`15m`). Carries `sub`, `email`, `role`,
+  `status`. Sent as `Authorization: Bearer <token>`.
+- **Refresh token** — opaque random string, **7 day** expiry. Only its **SHA-256
+  HMAC hash** is persisted in the `RefreshToken` table; the raw token is never
+  stored. Rotated on every `/refresh` (old token revoked, new pair issued).
+- **Passwords** — hashed with `argon2`. Never logged, never returned by any DTO.
+  Every response that includes a user goes through `toSafeUser()` which strips
+  `passwordHash`, `twoFactorSecret`, and token hashes.
+
+### JWT payload (shared with other services)
+
+```json
+{
+  "sub": "<user-id>",
+  "email": "user@example.com",
+  "role": "USER",
+  "status": "ACTIVE",
+  "iat": 1700000000,
+  "exp": 1700000900
+}
 ```
 
-## Compile and run the project
+`role` is read from the JWT payload by the `RolesGuard` (no DB lookup per
+request). Roles: `USER`, `ADMIN`.
 
-```bash
-# development
-$ npm run start
+### Base URL
 
-# watch mode
-$ npm run start:dev
+All routes are served under `/api`. Service defaults to port **3002**.
 
-# production mode
-$ npm run start:prod
+### Swagger
+
+Interactive docs: `GET http://localhost:3002/docs`
+
+## Endpoints
+
+### Auth — `/api/auth`
+
+| Method | Path                 | Description                            |
+| ------ | -------------------- | -------------------------------------- |
+| POST   | `/api/auth/register`        | Create account (returns safe user)     |
+| POST   | `/api/auth/login`           | Login → `{ accessToken, refreshToken, user }` |
+| POST   | `/api/auth/refresh`         | Rotate refresh token → new token pair  |
+| POST   | `/api/auth/logout`          | Revoke refresh token                   |
+| POST   | `/api/auth/forgot-password` | Request password reset link            |
+| POST   | `/api/auth/reset-password`  | Set new password with reset token      |
+| GET    | `/api/auth/verify-email/:token` | Verify email address               |
+
+Rate limited: `/register` (10/min), `/login` (5/min), `/forgot-password` (5/min).
+
+### Users — `/api/users` (Bearer token required)
+
+| Method | Path                      | Description                       |
+| ------ | ------------------------- | --------------------------------- |
+| GET    | `/api/users/me`           | Current user profile              |
+| PATCH  | `/api/users/me`           | Update first/last name            |
+| GET    | `/api/users`              | List users (**ADMIN only**)       |
+| PATCH  | `/api/users/:id/suspend`  | Suspend user (**ADMIN only**)     |
+
+## Error shape
+
+All errors use a consistent envelope:
+
+```json
+{ "statusCode": 400, "message": "some message", "error": "BadRequest" }
 ```
 
-## Run tests
+`message` may be an array of validation messages for class-validator failures.
+
+## Env vars
+
+| Variable                | Default                     | Description                              |
+| ----------------------- | --------------------------- | ---------------------------------------- |
+| `AUTH_DATABASE_URL`     | —                           | Postgres DSN for this service's database |
+| `JWT_ACCESS_SECRET`     | `change-me-access-secret`   | Secret used to sign access tokens        |
+| `JWT_ACCESS_EXPIRES_IN` | `15m`                       | Access token lifetime                    |
+| `JWT_REFRESH_SECRET`    | `change-me-refresh-secret`  | Pepper used to HMAC refresh tokens       |
+| `REFRESH_TOKEN_TTL_DAYS`| `7`                         | Refresh token lifetime                   |
+| `FRONTEND_URL`          | `http://localhost:3001`     | Base URL used for verification/reset links |
+| `AUTH_SERVICE_PORT`     | `3002`                      | HTTP port                                |
+
+## Local development
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+cp .env.example .env
+npm install
+npx prisma generate          # generates client into ./generated/prisma
+npx prisma migrate dev       # creates schema in the AUTH_DATABASE_URL database
+npm run start:dev            # http://localhost:3002, docs at /docs
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Testing
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm run test                 # unit tests (src/auth/*.spec.ts)
+npm run test:e2e             # e2e (requires a reachable database)
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Not implemented (schema fields reserved for later)
 
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- OAuth providers
+- 2FA (`twoFactorSecret`, `twoFactorEnabled` exist in the schema but no logic
+  is wired up yet)

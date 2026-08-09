@@ -9,6 +9,12 @@ out/
 dist/
 build/
 
+# Prisma generated client
+generated/
+
+# Coverage
+coverage/
+
 # Environment variables
 .env
 .env.*
